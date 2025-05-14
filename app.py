@@ -1,32 +1,34 @@
 import os
-import subprocess
 from PIL import Image
 import pytesseract
 from transformers import MarianMTModel, MarianTokenizer
 from langdetect import detect
-import gradio as gr
+import streamlit as st
 
-# Установка Tesseract и языковых пакетов
-if not os.path.exists("/usr/bin/tesseract"):
-    subprocess.run(["apt-get", "update"])
-    subprocess.run([
-        "apt-get", "install", "-y",
-        "tesseract-ocr", "tesseract-ocr-rus", "tesseract-ocr-spa"
-    ])
+# Настройки страницы
+st.set_page_config(
+    page_title="Переводчик RU ↔ ES с OCR",
+    page_icon="🌍",
+    layout="wide"
+)
 
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
+# Кэшируем загрузку моделей для ускорения работы
+@st.cache_resource
+def load_models():
+    model_ru_es = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-ru-es")
+    tokenizer_ru_es = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-ru-es")
+    
+    model_es_ru = MarianMTModel.from_pretrained("Helsinki-NLP/opus-mt-es-ru")
+    tokenizer_es_ru = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-es-ru")
+    
+    return {
+        "Русский → Испанский": (model_ru_es, tokenizer_ru_es),
+        "Испанский → Русский": (model_es_ru, tokenizer_es_ru)
+    }
 
-# Загрузка моделей
-model_ru_es_name = "Helsinki-NLP/opus-mt-ru-es"
-model_es_ru_name = "Helsinki-NLP/opus-mt-es-ru"
+models = load_models()
 
-tokenizer_ru_es = MarianTokenizer.from_pretrained(model_ru_es_name)
-model_ru_es = MarianMTModel.from_pretrained(model_ru_es_name)
-
-tokenizer_es_ru = MarianTokenizer.from_pretrained(model_es_ru_name)
-model_es_ru = MarianMTModel.from_pretrained(model_es_ru_name)
-
-# Разделение текста на части
+# Разделение длинного текста на части
 def split_text(text, max_length=500):
     sentences = text.split('. ')
     chunks = []
@@ -44,98 +46,123 @@ def split_text(text, max_length=500):
     
     return chunks
 
-# Предобработка изображения (перевод в ч/б)
+# Предобработка изображения
 def preprocess_image(image):
     gray_image = image.convert('L')
     binarized_image = gray_image.point(lambda p: p > 128 and 255)
     return binarized_image
 
-# Перевод текста
+# Функция перевода
 def translate_text(text, direction):
     if not text.strip():
         return "Ошибка: введите текст для перевода."
-    if len(text) > 500:
-        return "Ошибка: текст слишком длинный (максимум 500 символов)."
+    
+    if len(text) > 5000:
+        return "Ошибка: текст слишком длинный (максимум 5000 символов)."
 
     if direction == "Автоопределение":
-        lang = detect(text)
-        if lang == "ru":
-            direction = "Русский → Испанский"
-        elif lang == "es":
-            direction = "Испанский → Русский"
-        else:
-            return "Ошибка: поддерживаются только русский и испанский языки."
+        try:
+            lang = detect(text)
+            if lang == "ru":
+                direction = "Русский → Испанский"
+            elif lang == "es":
+                direction = "Испанский → Русский"
+            else:
+                return "Ошибка: поддерживаются только русский и испанский языки."
+        except:
+            return "Ошибка: не удалось определить язык."
 
-    if direction == "Русский → Испанский":
-        tokenizer = tokenizer_ru_es
-        model = model_ru_es
-    elif direction == "Испанский → Русский":
-        tokenizer = tokenizer_es_ru
-        model = model_es_ru
-    else:
+    if direction not in models:
         return "Ошибка: неверное направление перевода."
 
-    inputs = tokenizer(text, return_tensors="pt")
-    translated_tokens = model.generate(**inputs)
-    translation = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
-    return translation
+    model, tokenizer = models[direction]
+    text_parts = split_text(text)
+    translations = []
+    
+    for part in text_parts:
+        inputs = tokenizer(part, return_tensors="pt")
+        translated_tokens = model.generate(**inputs)
+        translation = tokenizer.batch_decode(translated_tokens, skip_special_tokens=True)[0]
+        translations.append(translation)
+    
+    return ' '.join(translations)
 
 # OCR + перевод
 def ocr_and_translate(image, direction):
     try:
-        # Предобрабатываем изображение
         preprocessed_image = preprocess_image(image)
-        
-        # Извлекаем текст
         extracted_text = pytesseract.image_to_string(preprocessed_image, lang="rus+spa")
         
-        # Разбиваем текст и переводим
-        text_parts = split_text(extracted_text)
-        translated_parts = [translate_text(part, direction) for part in text_parts]
-        
-        # Возвращаем результат
-        final_translation = ' '.join(translated_parts)
-        return extracted_text.strip(), final_translation
+        if not extracted_text.strip():
+            return "Не удалось распознать текст на изображении", ""
+            
+        translation = translate_text(extracted_text, direction)
+        return extracted_text.strip(), translation
     except Exception as e:
-        return f"Ошибка распознавания: {e}", ""
+        return f"Ошибка распознавания: {str(e)}", ""
 
-# Интерфейс Gradio
-with gr.Blocks(title="Переводчик RU ↔ ES с OCR") as app:
-    gr.Markdown("## 🇷🇺 Перевод текста и изображений 🇪🇸")
+# Интерфейс Streamlit
+st.title("🇷🇺 Переводчик с OCR 🇪🇸")
+st.write("Перевод текста и изображений между русским и испанским языками")
 
-    with gr.Tab("📝 Текстовый перевод"):
-        with gr.Row():
-            with gr.Column():
-                text_input = gr.Textbox(lines=5, label="Введите текст")
-                direction_text = gr.Radio(
-                    ["Автоопределение", "Русский → Испанский", "Испанский → Русский"],
-                    value="Автоопределение",
-                    label="Направление перевода"
-                )
-                btn_text = gr.Button("Перевести")
-            with gr.Column():
-                output_text = gr.Textbox(lines=5, label="Переведённый текст")
+tab1, tab2 = st.tabs(["📝 Текстовый перевод", "🖼️ Перевод с изображения"])
 
-        btn_text.click(fn=translate_text, inputs=[text_input, direction_text], outputs=output_text)
+with tab1:
+    with st.form("text_translation_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            text_input = st.text_area("Введите текст:", height=200)
+            direction_text = st.radio(
+                "Направление перевода:",
+                ["Автоопределение", "Русский → Испанский", "Испанский → Русский"],
+                index=0
+            )
+            submit_text = st.form_submit_button("Перевести")
+        
+        with col2:
+            if submit_text and text_input:
+                with st.spinner("Переводим..."):
+                    result = translate_text(text_input, direction_text)
+                st.text_area("Переведённый текст:", value=result, height=200)
+            else:
+                st.text_area("Переведённый текст:", height=200)
 
-    with gr.Tab("🖼️ Перевод с изображения"):
-        with gr.Row():
-            with gr.Column():
-                image_input = gr.Image(type="pil", label="Загрузите изображение")
-                direction_image = gr.Radio(
-                    ["Автоопределение", "Русский → Испанский", "Испанский → Русский"],
-                    value="Автоопределение",
-                    label="Направление перевода"
-                )
-                btn_image = gr.Button("Распознать и перевести")
-            with gr.Column():
-                extracted_box = gr.Textbox(lines=5, label="Распознанный текст")
-                translated_box = gr.Textbox(lines=5, label="Переведённый текст")
+with tab2:
+    with st.form("image_translation_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            image_input = st.file_uploader(
+                "Загрузите изображение:",
+                type=["jpg", "jpeg", "png"]
+            )
+            if image_input:
+                image = Image.open(image_input)
+                st.image(image, caption="Загруженное изображение", width=300)
+                
+            direction_image = st.radio(
+                "Направление перевода:",
+                ["Автоопределение", "Русский → Испанский", "Испанский → Русский"],
+                index=0,
+                key="image_direction"
+            )
+            submit_image = st.form_submit_button("Распознать и перевести")
+        
+        with col2:
+            if submit_image and image_input:
+                with st.spinner("Обрабатываем изображение..."):
+                    extracted, translated = ocr_and_translate(image, direction_image)
+                
+                st.text_area("Распознанный текст:", value=extracted, height=100)
+                st.text_area("Переведённый текст:", value=translated, height=100)
+            else:
+                st.text_area("Распознанный текст:", height=100)
+                st.text_area("Переведённый текст:", height=100)
 
-        btn_image.click(
-            fn=ocr_and_translate,
-            inputs=[image_input, direction_image],
-            outputs=[extracted_box, translated_box]
-        )
-
-app.launch()
+# Подсказка про Tesseract
+st.sidebar.info(
+    "Для работы с изображениями требуется Tesseract OCR. "
+    "На локальной машине установите: \n\n"
+    "`sudo apt install tesseract-ocr tesseract-ocr-rus tesseract-ocr-spa`"
+)
