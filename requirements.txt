@@ -1,0 +1,7 @@
+transformers
+torch
+sentencepiece
+gradio
+langdetect
+pytesseract
+Pillow
