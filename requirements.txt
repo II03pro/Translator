@@ -1,8 +1,8 @@
-transformers>=4.0.0
-torch>=1.7.0
-sentencepiece
-gradio
-langdetect
-pytesseract
-Pillow
-sacremoses
+streamlit>=1.22.0
+transformers>=4.26.0
+torch>=1.12.0
+sentencepiece>=0.1.96
+langdetect>=1.0.9
+pytesseract>=0.3.10
+Pillow>=9.4.0
+sacremoses>=0.0.53
