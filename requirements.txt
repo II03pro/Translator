@@ -1,7 +1,8 @@
-transformers
-torch
+transformers>=4.0.0
+torch>=1.7.0
 sentencepiece
 gradio
 langdetect
 pytesseract
 Pillow
+sacremoses
